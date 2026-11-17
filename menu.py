@@ -1,149 +1,105 @@
-"""A játék főmenüje."""
-
+"""menu.py - a MainMenu osztály: a főmenü, innen indítjuk a játékokat."""
+import random
 import tkinter as tk
 
 import settings as cfg
-from base_game import BaseGame
+from base_game import format_time, get_rank, styled_button
 from memory_game import MemoryGame
-from scores import ScoreManager
 from simon_game import SimonGame
 
 
 class MainMenu:
-    def __init__(self, root: tk.Tk, score_manager: ScoreManager):
+    """A főmenü: két játék közül lehet választani, és látszanak a rekordok."""
+
+    def __init__(self, root, score_manager):
         self.root = root
         self.score_manager = score_manager
-        self.frame: tk.Frame | None = None
-        self.current_game: BaseGame | None = None
+        self.frame = None               # a menü kerete
+        self.current_game = None        # az éppen futó játék (None, ha a menü látszik)
         self.show()
 
-    def show(self) -> None:
+    def show(self):
+        """Felépíti és megjeleníti a menüt."""
         if self.frame is not None:
             self.frame.destroy()
-
         self.frame = tk.Frame(self.root, bg=cfg.BG)
-        self.frame.pack(fill="both", expand=True, padx=36, pady=28)
+        self.frame.pack(fill="both", expand=True)
 
-        tk.Label(
-            self.frame,
-            text="🧠  MEMÓRIA",
-            font=(cfg.FONT, 34, "bold"),
-            bg=cfg.BG,
-            fg=cfg.TEXT,
-        ).pack(pady=(26, 4))
-        tk.Label(
-            self.frame,
-            text="Játssz, figyelj, és döntsd meg a saját rekordodat!",
-            font=cfg.BODY_FONT,
-            bg=cfg.BG,
-            fg=cfg.MUTED,
-        ).pack(pady=(0, 30))
+        # Cím: minden betű más színű
+        title = tk.Canvas(self.frame, width=460, height=96, bg=cfg.BG, highlightthickness=0)
+        title.pack(pady=(34, 0))
+        for i, letter in enumerate(cfg.APP_NAME.upper()):
+            bright = cfg.SIMON_COLORS[i % 4][1]
+            title.create_text(48 + i * 91 + 3, 51, text=letter, fill=cfg.SHADOW,
+                              font=(cfg.FONT_FAMILY, 54, "bold"))          # árnyék
+            title.create_text(48 + i * 91, 48, text=letter, fill=bright,
+                              font=(cfg.FONT_FAMILY, 54, "bold"))
+        tk.Label(self.frame, text="Memóriajátékok", bg=cfg.BG, fg=cfg.MUTED,
+                 font=(cfg.FONT_FAMILY, 16)).pack()
 
-        games = tk.Frame(self.frame, bg=cfg.BG)
-        games.pack()
-        self.make_game_card(
-            games,
-            "🃏",
-            "Kártyapár-kereső",
-            "Találd meg az összes párt minél kevesebb lépésből.",
-            "JÁTÉK INDÍTÁSA",
-            MemoryGame,
-            0,
-        )
-        self.make_game_card(
-            games,
-            "🎨",
-            "Színsorozat",
-            "Jegyezd meg a színeket, és juss egyre tovább!",
-            "JÁTÉK INDÍTÁSA",
-            SimonGame,
-            1,
-        )
+        # A két játék panelje egymás mellett
+        panels = tk.Frame(self.frame, bg=cfg.BG)
+        panels.pack(pady=30)
 
-        tk.Label(
-            self.frame,
-            text="Minden játék után nézd meg, sikerült-e új rekordot elérned. 🏆",
-            font=cfg.BODY_FONT,
-            bg=cfg.BG,
-            fg=cfg.ACCENT,
-        ).pack(pady=(26, 12))
-        tk.Button(
-            self.frame,
-            text="Kilépés",
-            command=self.quit,
-            font=cfg.BODY_FONT,
-            bg=cfg.BG,
-            fg=cfg.MUTED,
-            activebackground=cfg.PANEL,
-            activeforeground=cfg.TEXT,
-            relief="flat",
-            padx=16,
-            pady=8,
-        ).pack()
+        memory_lines = []
+        for name in cfg.DIFFICULTIES:
+            best = self.score_manager.get_best("memory_" + name)
+            result = "–"
+            if best:
+                result = f"{best['moves']} lépés · {format_time(best['seconds'])}"
+            memory_lines.append(f"{name}: {result}")
+        self._build_panel(panels, 0, "Kártyapár-kereső",
+                          "Fordíts fel két kártyát, és találd meg az összes párt "
+                          "minél kevesebb lépésből!", memory_lines, MemoryGame)
 
-    def make_game_card(
-        self,
-        parent: tk.Frame,
-        emoji: str,
-        title: str,
-        description: str,
-        button_text: str,
-        game_class: type[BaseGame],
-        column: int,
-    ) -> None:
-        card = tk.Frame(parent, bg=cfg.PANEL, padx=24, pady=22, width=370, height=280)
-        card.grid(row=0, column=column, padx=12, sticky="nsew")
-        card.grid_propagate(False)
+        simon_lines = []
+        for name in cfg.SIMON_SPEEDS:
+            best = self.score_manager.get_best("simon_" + name)
+            result = "–"
+            if best:
+                result = f"{best['level']}. szint · {get_rank(best['level'])}"
+            simon_lines.append(f"{name}: {result}")
+        self._build_panel(panels, 1, "Színsorozat",
+                          "Jegyezd meg a felvillanó színeket, és játszd vissza őket – "
+                          "minden kör eggyel hosszabb!", simon_lines, SimonGame)
 
-        tk.Label(
-            card,
-            text=emoji,
-            font=(cfg.FONT, 34),
-            bg=cfg.PANEL,
-            fg=cfg.TEXT,
-        ).pack(pady=(4, 8))
-        tk.Label(
-            card,
-            text=title,
-            font=(cfg.FONT, 18, "bold"),
-            bg=cfg.PANEL,
-            fg=cfg.TEXT,
-        ).pack()
-        tk.Label(
-            card,
-            text=description,
-            font=cfg.BODY_FONT,
-            bg=cfg.PANEL,
-            fg=cfg.MUTED,
-            wraplength=290,
-            justify="center",
-        ).pack(pady=(8, 18))
-        tk.Button(
-            card,
-            text=button_text,
-            command=lambda: self.start_game(game_class),
-            font=cfg.BUTTON_FONT,
-            bg=cfg.ACCENT,
-            fg=cfg.BG,
-            activebackground=cfg.ACCENT,
-            relief="flat",
-            padx=18,
-            pady=10,
-            cursor="hand2",
-        ).pack()
+        styled_button(self.frame, "Kilépés", self.quit).pack()
+        tk.Label(self.frame, text=random.choice(cfg.TIPS), bg=cfg.BG, fg=cfg.MUTED,
+                 font=(cfg.FONT_FAMILY, 10)).pack(pady=(16, 0))
 
-    def start_game(self, game_class: type[BaseGame]) -> None:
+    def _build_panel(self, parent, column, title, description, best_lines, game_class):
+        """Egy játék paneljét építi fel: cím, leírás, rekordok, indítógomb."""
+        outer = tk.Frame(parent, bg=cfg.PANEL)
+        outer.grid(row=0, column=column, padx=14)
+        bar = tk.Frame(outer, bg=cfg.PANEL)                 # színes csík a panel tetején
+        bar.pack(fill="x")
+        for normal, _bright in cfg.SIMON_COLORS:
+            tk.Frame(bar, bg=normal, height=5).pack(side="left", expand=True, fill="x")
+        panel = tk.Frame(outer, bg=cfg.PANEL, padx=26, pady=20)
+        panel.pack()
+        tk.Label(panel, text=title, bg=cfg.PANEL, fg=cfg.TEXT,
+                 font=(cfg.FONT_FAMILY, 18, "bold")).pack()
+        tk.Label(panel, text=description, bg=cfg.PANEL, fg=cfg.MUTED, wraplength=270,
+                 font=(cfg.FONT_FAMILY, 11)).pack(pady=(10, 14))
+        tk.Label(panel, text="Legjobb eredmények", bg=cfg.PANEL, fg=cfg.ACCENT_HI,
+                 font=(cfg.FONT_FAMILY, 10, "bold")).pack()
+        for line in best_lines:
+            tk.Label(panel, text=line, bg=cfg.PANEL, fg=cfg.TEXT,
+                     font=(cfg.FONT_FAMILY, 10)).pack()
+        styled_button(panel, "Játék indítása", lambda: self.start_game(game_class),
+                      primary=True, font_size=12, padx=26, pady=10).pack(pady=(18, 0))
+
+    def start_game(self, game_class):
+        """Elrejti a menüt, létrehozza és elindítja a kiválasztott játékot."""
         self.frame.pack_forget()
-        self.current_game = game_class(
-            self.root,
-            self.score_manager,
-            self.return_to_menu,
-        )
+        self.current_game = game_class(self.root, self.score_manager, self.return_to_menu)
         self.current_game.start()
 
-    def return_to_menu(self) -> None:
+    def return_to_menu(self):
+        """A játék után újra megjeleníti a menüt (friss rekordokkal)."""
         self.current_game = None
         self.show()
 
-    def quit(self) -> None:
+    def quit(self):
+        """Bezárja a programot."""
         self.root.destroy()

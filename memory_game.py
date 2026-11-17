@@ -1,296 +1,342 @@
-"""A kártyapár-kereső játékmód."""
-
+"""memory_game.py - a MemoryGame osztály: a kártyapár-kereső játék."""
+import random
 import tkinter as tk
-from tkinter import messagebox
-from collections.abc import Callable
 
 import settings as cfg
-from base_game import BaseGame
+from base_game import BaseGame, format_time, set_button_state, styled_button
 from board import Board
-from scores import ScoreManager
 
 
 class MemoryGame(BaseGame):
-    def __init__(
-        self,
-        root: tk.Tk,
-        score_manager: ScoreManager,
-        on_exit: Callable[[], None],
-    ):
-        super().__init__(root, score_manager, on_exit)
-        self.difficulty = "Könnyű"
-        self.board = Board(3, 4, cfg.SYMBOLS)
-        self.buttons: list[tk.Button] = []
-        self.first_index: int | None = None
-        self.locked = False
-        self.moves = 0
-        self.seconds = 0
-        self.timer_running = False
-        self.timer_id: str | None = None
-        self.mismatch_id: str | None = None
-        self.moves_label: tk.Label | None = None
-        self.time_label: tk.Label | None = None
-        self.status_label: tk.Label | None = None
-        self.difficulty_var = tk.StringVar(value=self.difficulty)
+    """Kártyapár-kereső: két kártyát fordítunk fel, ha egyeznek, felfordítva maradnak."""
 
-    def start(self) -> None:
+    def __init__(self, root, score_manager, on_exit):
+        super().__init__(root, score_manager, on_exit)
+        self.difficulty = "Közepes"     # a kiválasztott nehézségi szint
+        self.board = None               # a pálya (Board objektum)
+        self.buttons = []               # a kártyák (egy tk.Button = egy kártya)
+        self.first_index = None         # az első felfordított kártya sorszáma
+        self.locked = False             # igaz, amíg nem lehet kattintani
+        self.moves = 0                  # lépések száma
+        self.seconds = 0                # eltelt idő
+        self.timer_running = False      # megy-e az óra
+        self.moves_label = None         # a lépéseket kiíró felirat
+        self.time_label = None          # az időt kiíró felirat
+        # ----- extrák
+        self.theme = "Jelek"            # mi legyen a kártyákon (Jelek / Betűk / Számok)
+        self.streak = 0                 # hány találat volt egymás után (kombó)
+        self.best_streak = 0            # a leghosszabb kombó ebben a játékban
+        self.hints_left = 0             # hány segítség maradt
+        self.hover = None               # melyik kártya fölött van az egér
+        self.timer_id = None
+        self.board_frame = None
+        self.best_label = None
+        self.info_label = None
+        self.hint_button = None
+        self.progress_bar = None
+        self.level_buttons = {}
+        self.theme_buttons = {}
+
+    def start(self):
+        """Felépíti a felületet (build_ui), majd elindítja az első játékot (new_game)."""
+        self.frame.pack(fill="both", expand=True)
+        self.set_keys()
+        self.root.bind("<Key-h>", lambda event: self.use_hint())
         self.build_ui()
         self.new_game()
 
-    def build_ui(self) -> None:
-        self.frame.pack(fill="both", expand=True, padx=24, pady=18)
+    def build_ui(self):
+        """Létrehozza a feliratokat, a gombokat és a kártyák helyét."""
+        self.best_label = self.make_header("Kártyapár-kereső")
 
-        header = tk.Frame(self.frame, bg=cfg.BG)
-        header.pack(fill="x")
-        tk.Button(
-            header,
-            text="←  Menü",
-            command=self.back_to_menu,
-            font=cfg.BODY_FONT,
-            bg=cfg.BG,
-            fg=cfg.MUTED,
-            activebackground=cfg.PANEL,
-            activeforeground=cfg.TEXT,
-            relief="flat",
-        ).pack(side="left")
-        tk.Label(
-            header,
-            text="Kártyapár-kereső",
-            font=cfg.TITLE_FONT,
-            bg=cfg.BG,
-            fg=cfg.TEXT,
-        ).pack(side="left", padx=20)
+        # lépések, idő, segítség
+        stats = tk.Frame(self.frame, bg=cfg.BG)
+        stats.pack(pady=(10, 4))
+        self.moves_label = tk.Label(stats, bg=cfg.PANEL, fg=cfg.TEXT, width=22, pady=8,
+                                    font=(cfg.FONT_FAMILY, 14, "bold"))
+        self.moves_label.pack(side="left", padx=6)
+        self.time_label = tk.Label(stats, bg=cfg.PANEL, fg=cfg.TEXT, width=12, pady=8,
+                                   font=(cfg.FONT_FAMILY, 14, "bold"))
+        self.time_label.pack(side="left", padx=6)
+        self.hint_button = styled_button(stats, "", self.use_hint, pady=8)
+        self.hint_button.pack(side="left", padx=6)
 
-        controls = tk.Frame(self.frame, bg=cfg.BG)
-        controls.pack(fill="x", pady=(14, 12))
+        # haladássáv (annyira telik meg, ahány pár megvan)
+        track = tk.Frame(self.frame, bg=cfg.PANEL_HI, width=440, height=6)
+        track.pack(pady=(2, 0))
+        self.progress_bar = tk.Frame(track, bg=cfg.SUCCESS)
+        self.progress_bar.place(x=0, y=0, relheight=1.0, relwidth=0.0)
 
-        tk.Label(
-            controls,
-            text="Nehézség",
-            font=cfg.BODY_FONT,
-            bg=cfg.BG,
-            fg=cfg.MUTED,
-        ).pack(side="left", padx=(0, 8))
-        tk.OptionMenu(
-            controls,
-            self.difficulty_var,
-            *cfg.DIFFICULTIES.keys(),
-            command=self.change_difficulty,
-        ).pack(side="left")
+        self.info_label = tk.Label(self.frame, bg=cfg.BG, font=(cfg.FONT_FAMILY, 13, "bold"))
+        self.info_label.pack(pady=(4, 0))
 
-        self.moves_label = self.make_stat(controls, "Lépések", "0")
-        self.time_label = self.make_stat(controls, "Idő", "0 mp")
+        # nehézség- és témaválasztó
+        options = tk.Frame(self.frame, bg=cfg.BG)
+        options.pack(pady=(2, 0))
+        self.level_buttons = self.make_choice(options, "Nehézség:", cfg.DIFFICULTIES,
+                                              self.change_difficulty)
+        self.theme_buttons = self.make_choice(options, "Téma:", cfg.THEMES, self.change_theme)
 
-        tk.Button(
-            controls,
-            text="Új játék",
-            command=self.new_game,
-            font=cfg.BUTTON_FONT,
-            bg=cfg.ACCENT,
-            fg=cfg.BG,
-            activebackground=cfg.ACCENT,
-            relief="flat",
-            padx=16,
-            pady=8,
-        ).pack(side="right", padx=(8, 0))
-        tk.Button(
-            controls,
-            text="🏆 Ranglista",
-            command=lambda: self.show_scores(f"memory_{self.difficulty}"),
-            font=cfg.BODY_FONT,
-            bg=cfg.BUTTON,
-            fg=cfg.TEXT,
-            activebackground=cfg.BUTTON_HOVER,
-            activeforeground=cfg.TEXT,
-            relief="flat",
-            padx=12,
-            pady=8,
-        ).pack(side="right")
-
-        self.status_label = tk.Label(
-            self.frame,
-            text="Találd meg az összes párt!",
-            font=cfg.BODY_FONT,
-            bg=cfg.BG,
-            fg=cfg.ACCENT,
-        )
-        self.status_label.pack(pady=(0, 12))
-
-        self.board_frame = tk.Frame(self.frame, bg=cfg.BG)
+        self.board_frame = tk.Frame(self.frame, bg=cfg.BOARD_BG, padx=12, pady=12,
+                                    highlightbackground=cfg.BOARD_BORDER, highlightthickness=2)
         self.board_frame.pack(expand=True)
 
-    def make_stat(self, parent: tk.Frame, title: str, value: str) -> tk.Label:
-        box = tk.Frame(parent, bg=cfg.PANEL, padx=12, pady=6)
-        box.pack(side="left", padx=6)
-        tk.Label(
-            box,
-            text=title,
-            font=(cfg.FONT, 9),
-            bg=cfg.PANEL,
-            fg=cfg.MUTED,
-        ).pack()
-        label = tk.Label(
-            box,
-            text=value,
-            font=(cfg.FONT, 13, "bold"),
-            bg=cfg.PANEL,
-            fg=cfg.TEXT,
-        )
-        label.pack()
-        return label
+        self.make_bottom_bar("Esc: menü  ·  Szóköz: új játék  ·  H: segítség  ·  M: hang")
 
-    def change_difficulty(self, difficulty: str) -> None:
-        self.difficulty = difficulty
-        self.new_game()
-
-    def new_game(self) -> None:
-        self.stop()
-        self.difficulty = self.difficulty_var.get()
+    def new_game(self):
+        """Új pályát csinál, nullázza a számlálókat, és megmutatja a kártyákat."""
+        self.cancel_all()
+        self.hide_overlay()
         rows, cols = cfg.DIFFICULTIES[self.difficulty]
-        self.board = Board(rows, cols, cfg.SYMBOLS)
+        self.board = Board(rows, cols, cfg.THEMES[self.theme])
         self.first_index = None
-        self.locked = False
         self.moves = 0
         self.seconds = 0
-
-        for button in self.buttons:
-            button.destroy()
-        self.buttons = []
-
+        self.streak = 0
+        self.best_streak = 0
+        self.hints_left = cfg.HINTS_PER_GAME
+        self.timer_running = False
+        self.hover = None
+        for name, button in self.level_buttons.items():
+            set_button_state(button, name == self.difficulty)
+        for name, button in self.theme_buttons.items():
+            set_button_state(button, name == self.theme)
         self.draw_board()
         self.update_labels()
-        self.status_label.config(text="Találd meg az összes párt!", fg=cfg.ACCENT)
+        self.update_best_label()
+        self.show_preview()
 
-    def draw_board(self) -> None:
-        for row in range(self.board.rows):
-            for col in range(self.board.cols):
-                index = row * self.board.cols + col
-                button = tk.Button(
-                    self.board_frame,
-                    text="?",
-                    command=lambda card_index=index: self.on_card_click(card_index),
-                    font=cfg.CARD_FONT,
-                    bg=cfg.CARD_BACK,
-                    fg=cfg.TEXT,
-                    activebackground=cfg.BUTTON_HOVER,
-                    activeforeground=cfg.TEXT,
-                    relief="flat",
-                    width=5,
-                    height=2,
-                    cursor="hand2",
-                )
-                button.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
-                self.buttons.append(button)
+    def show_preview(self):
+        """Pár másodpercre felfordítja az összes kártyát, hogy meg lehessen jegyezni őket."""
+        self.locked = True
+        self.info_label.config(text="Jegyezd meg a kártyákat!", fg=cfg.GOLD)
+        for index, card in enumerate(self.board.cards):
+            card.flip()
+            self.update_card_button(index)
+        self.later(cfg.PREVIEW_MS[self.difficulty], self.end_preview)
 
-    def update_card_button(self, index: int) -> None:
-        card = self.board.get_card(index)
+    def end_preview(self):
+        """Lefordítja a kártyákat, és kezdődhet a játék."""
+        for index, card in enumerate(self.board.cards):
+            card.hide()
+            self.flip_animation(index)
+        self.locked = False
+        self.info_label.config(text="Találd meg a párokat!", fg=cfg.ACCENT_HI)
+        self.play_tone(440, 160)
+
+    def draw_board(self):
+        """Létrehozza a kártyagombokat rácsban."""
+        for widget in self.board_frame.winfo_children():
+            widget.destroy()
+        self.buttons = []
+        size = cfg.CARD_SIZES[self.difficulty]
+        for index in range(len(self.board.cards)):
+            row, col = divmod(index, self.board.cols)
+            button = self.make_tile(self.board_frame, size,
+                                    lambda i=index: self.on_card_click(i), row, col)
+            button.config(font=(cfg.SYMBOL_FONT, int(size * 0.36), "bold"))
+            button.bind("<Enter>", lambda event, i=index: self.on_hover(i))
+            button.bind("<Leave>", lambda event: self.on_hover(None))
+            self.buttons.append(button)
+            self.update_card_button(index)
+
+    def update_card_button(self, index):
+        """A kártya állapota szerint beállítja a gomb színét és szövegét."""
         button = self.buttons[index]
-
-        if card.is_matched:
-            button.config(
-                text=card.value,
-                bg=cfg.GOOD,
-                fg=cfg.BG,
-                disabledforeground=cfg.BG,
-                state="disabled",
-            )
-        elif card.is_face_up:
-            button.config(text=card.value, bg=cfg.CARD_FRONT, fg=cfg.BG)
-        else:
-            button.config(text="?", bg=cfg.CARD_BACK, fg=cfg.TEXT, state="normal")
-
-    def on_card_click(self, index: int) -> None:
-        if self.locked:
-            return
-
         card = self.board.get_card(index)
-        if card.is_matched or card.is_face_up:
+        if card.is_face_up:
+            # felfordítva: a szimbólum a saját színével (a megtalált pár zöld hátterű)
+            color = cfg.SYMBOL_COLORS[cfg.THEMES[self.theme].index(card.value)]
+            if card.is_matched:
+                back, border = cfg.CARD_MATCHED, cfg.SUCCESS
+            else:
+                back, border = cfg.CARD_FACE, cfg.ACCENT_HI
+            text = card.value
+        else:
+            # lefordítva (ha fölötte az egér, világosabb)
+            hovered = (index == self.hover)
+            back = cfg.CARD_BACK_HI if hovered else cfg.CARD_BACK
+            border = cfg.ACCENT if hovered else cfg.CARD_BORDER
+            color = cfg.CARD_PATTERN
+            text = "◆"
+        button.config(text=text, fg=color, bg=back, activeforeground=color,
+                      activebackground=back, highlightbackground=border, highlightcolor=border)
+
+    def on_hover(self, index):
+        """Az egér fölé érésekor kiemeli a lefordított kártyát."""
+        old = self.hover
+        self.hover = index
+        for i in (old, index):
+            if i is not None and i < len(self.buttons):
+                if not self.board.get_card(i).is_face_up:
+                    self.update_card_button(i)
+
+    def flip_animation(self, index, step=0):
+        """Fordítás animáció: a kártya összeszűkül, a közepén átvált, majd kinyílik."""
+        if index >= len(self.buttons):
             return
+        scale = max(abs(1 - step / 4), 0.05)            # a szélesség: 1 -> 0 -> 1
+        self.buttons[index].place_configure(relwidth=scale)
+        if step == 4:
+            self.update_card_button(index)              # a közepén mutatjuk a másik oldalát
+        if step < 8:
+            self.later(20, self.flip_animation, index, step + 1)
+
+    def on_card_click(self, index):
+        """Egy kártyára kattintottak."""
+        card = self.board.get_card(index)
+        if self.locked or card.is_face_up:
+            return
+
+        if not self.timer_running:                      # az első kattintásra indul az óra
+            self.timer_running = True
+            self.timer_id = self.later(1000, self.tick)
 
         card.flip()
-        self.update_card_button(index)
-
-        if not self.timer_running:
-            self.timer_running = True
-            self.timer_id = self.root.after(1000, self.tick)
+        self.flip_animation(index)
+        self.play_tone(700, 50)
 
         if self.first_index is None:
-            self.first_index = index
-            return
-
-        self.moves += 1
-        self.update_labels()
-        self.check_pair(self.first_index, index)
-
-    def check_pair(self, first: int, second: int) -> None:
-        first_card = self.board.get_card(first)
-        second_card = self.board.get_card(second)
-
-        if first_card.matches(second_card):
-            first_card.set_matched()
-            second_card.set_matched()
-            self.update_card_button(first)
-            self.update_card_button(second)
-            self.status_label.config(text="Szép! Megvan egy pár! ✨", fg=cfg.GOOD)
-            self.first_index = None
-
-            if self.board.is_finished():
-                self.finish_game()
+            self.first_index = index                    # ez az első kártya
         else:
-            self.locked = True
-            self.status_label.config(text="Nem egyeznek — próbáld újra!", fg=cfg.MUTED)
-            self.mismatch_id = self.root.after(
-                cfg.MISMATCH_DELAY,
-                lambda: self.hide_mismatch(first, second),
-            )
+            self.moves += 1                             # a másodikkal egy lépés kész
+            self.update_labels()
+            self.check_pair(self.first_index, index)
 
-    def hide_mismatch(self, first: int, second: int) -> None:
-        self.board.get_card(first).hide()
-        self.board.get_card(second).hide()
-        self.update_card_button(first)
-        self.update_card_button(second)
+    def check_pair(self, first, second):
+        """Megnézi, hogy a két felfordított kártya egyezik-e."""
         self.first_index = None
+        card_a = self.board.get_card(first)
+        card_b = self.board.get_card(second)
+
+        if card_a.matches(card_b):
+            card_a.set_matched()
+            card_b.set_matched()
+            self.streak += 1
+            self.best_streak = max(self.best_streak, self.streak)
+            if self.streak >= 2:
+                self.info_label.config(text=f"Kombó ×{self.streak}!", fg=cfg.GOLD)
+            else:
+                self.info_label.config(text="Találat!", fg=cfg.SUCCESS)
+            high = min(self.streak, 6) * 90             # a kombóval egyre magasabb a hang
+            self.play_melody([(560 + high, 110), (840 + high, 260)])
+            self.later(200, self.update_card_button, first)
+            self.later(200, self.update_card_button, second)
+            self.update_labels()
+            if self.board.is_finished():
+                self.locked = True
+                self.later(700, self.finish_game)
+        else:
+            self.streak = 0
+            self.info_label.config(text="Nem egyezik – próbáld újra!", fg=cfg.MUTED)
+            self.locked = True
+            self.later(cfg.MISMATCH_DELAY, self.hide_mismatch, first, second)
+
+    def hide_mismatch(self, first, second):
+        """Visszafordítja a nem egyező kártyákat, és feloldja a zárolást."""
+        self.play_tone(200, 220)
+        for index in (first, second):
+            self.board.get_card(index).hide()
+            self.flip_animation(index)
         self.locked = False
-        self.mismatch_id = None
-        self.status_label.config(text="Jöhet a következő pár!", fg=cfg.ACCENT)
 
-    def tick(self) -> None:
-        if not self.timer_running:
+    def use_hint(self):
+        """Segítség: egy másodpercre megmutat egy párt (2 lépésbe kerül)."""
+        if self.locked or self.first_index is not None or self.hints_left == 0:
             return
-
-        self.seconds += 1
+        places = {}                                     # szimbólum -> hol van a két kártya
+        for index, card in enumerate(self.board.cards):
+            if not card.is_matched:
+                places.setdefault(card.value, []).append(index)
+        first, second = random.choice(list(places.values()))
+        self.hints_left -= 1
+        self.moves += 2
+        self.locked = True
+        for index in (first, second):
+            self.board.get_card(index).flip()
+            self.flip_animation(index)
+        self.later(1200, self.end_hint, first, second)
         self.update_labels()
-        self.timer_id = self.root.after(1000, self.tick)
 
-    def update_labels(self) -> None:
-        self.moves_label.config(text=str(self.moves))
-        self.time_label.config(text=f"{self.seconds} mp")
+    def end_hint(self, first, second):
+        """A segítség után visszafordítja a két kártyát."""
+        for index in (first, second):
+            self.board.get_card(index).hide()
+            self.flip_animation(index)
+        self.locked = False
 
-    def finish_game(self) -> None:
+    def tick(self):
+        """Másodpercenként növeli az időt, amíg megy az óra."""
+        if self.timer_running:
+            self.seconds += 1
+            self.update_labels()
+            self.timer_id = self.later(1000, self.tick)
+
+    def update_labels(self):
+        """Kiírja a lépéseket, a megtalált párokat, az időt és a segítségek számát."""
+        found = 0
+        for card in self.board.cards:
+            if card.is_matched:
+                found += 1
+        pairs = self.board.pair_count()
+        self.moves_label.config(text=f"Lépés: {self.moves}  ·  Pár: {found // 2}/{pairs}")
+        self.time_label.config(text=f"Idő: {format_time(self.seconds)}")
+        self.hint_button.config(text=f"Segítség ({self.hints_left})")
+        self.progress_bar.place_configure(relwidth=(found // 2) / pairs)
+
+    def finish_game(self):
+        """Vége: leállítja az órát, elmenti az eredményt, megmutatja a végeredményt."""
         self.timer_running = False
         if self.timer_id is not None:
             self.root.after_cancel(self.timer_id)
-            self.timer_id = None
+        old_best = self.score_manager.get_best(self.category())
+        record = self.score_manager.add_memory_score(self.difficulty, self.moves, self.seconds)
 
-        is_record = self.score_manager.add_memory_score(
-            self.difficulty,
-            self.moves,
-            self.seconds,
-        )
-        self.status_label.config(text="Minden pár megvan! 🎉", fg=cfg.GOOD)
-        message = (
-            f"Ügyes vagy! {self.moves} lépésből, {self.seconds} másodperc alatt "
-            "megtaláltad az összes párt."
-        )
-        if is_record:
-            message += "\n\n🏆 Új rekord!"
-        messagebox.showinfo("Játék vége", message, parent=self.root)
+        # csillagok: minél kevesebb a lépés, annál több
+        pairs = self.board.pair_count()
+        if self.moves <= pairs * 1.5:
+            stars = 3
+        elif self.moves <= pairs * 2.2:
+            stars = 2
+        else:
+            stars = 1
 
-    def stop(self) -> None:
+        lines = [cfg.MEMORY_RANKS[stars],
+                 f"{self.moves} lépés  ·  {format_time(self.seconds)}",
+                 f"Leghosszabb kombó: ×{self.best_streak}"]
+        if not record and old_best is not None:
+            lines.append(f"A rekordod {old_best['moves']} lépés – döntsd meg!")
+
+        self.play_melody([(523, 130), (659, 130), (784, 130), (1047, 450)])
+        self.update_best_label()
+        self.show_overlay("Gratulálunk!", lines, "Új rekord!" if record else "",
+                          "★" * stars + "☆" * (3 - stars))
+
+    def stop(self):
+        """Leállítja az órát és az időzítőket."""
         self.timer_running = False
-        if self.timer_id is not None:
-            self.root.after_cancel(self.timer_id)
-            self.timer_id = None
-        if self.mismatch_id is not None:
-            self.root.after_cancel(self.mismatch_id)
-            self.mismatch_id = None
+        super().stop()
+
+    # ------------------------------------------------------------ kis segédek
+    def category(self):
+        """A ranglista kategóriája az aktuális nehézséghez."""
+        return "memory_" + self.difficulty
+
+    def change_difficulty(self, name):
+        """Nehézség váltása (új játék indul)."""
+        self.difficulty = name
+        self.new_game()
+
+    def change_theme(self, name):
+        """Téma váltása (új játék indul)."""
+        self.theme = name
+        self.new_game()
+
+    def update_best_label(self):
+        """Kiírja az aktuális nehézség rekordját."""
+        best = self.score_manager.get_best(self.category())
+        if best:
+            text = f"Rekord: {best['moves']} lépés · {format_time(best['seconds'])}"
+        else:
+            text = "Rekord: –"
+        self.best_label.config(text=text)

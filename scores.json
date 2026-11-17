@@ -1,6 +1,10 @@
 {
   "memory_Könnyű": [
     {
+      "moves": 10,
+      "seconds": 11
+    },
+    {
       "moves": 18,
       "seconds": 24
     }
@@ -8,6 +12,23 @@
   "simon_Normál": [
     {
       "level": 4
+    },
+    {
+      "level": 4,
+      "date": "2026.11.17."
+    }
+  ],
+  "memory_Közepes": [
+    {
+      "moves": 21,
+      "seconds": 31,
+      "date": "2026.11.17."
+    }
+  ],
+  "simon_Gyors": [
+    {
+      "level": 9,
+      "date": "2026.11.17."
     }
   ]
 }

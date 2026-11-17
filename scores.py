@@ -1,75 +1,77 @@
-"""A két játék legjobb eredményeit menti el."""
-
+"""scores.py - a ScoreManager osztály: a ranglista mentése és betöltése (JSON fájl)."""
 import json
-from collections.abc import Callable
+from datetime import datetime
+
+import settings as cfg
 
 
 class ScoreManager:
-    def __init__(self, filename: str):
+    """A legjobb eredményeket tárolja kategóriánként.
+
+    A kategória neve pl.: "memory_Könnyű" vagy "simon_Normál".
+    """
+
+    def __init__(self, filename):
         self.filename = filename
-        self.scores: dict[str, list[dict]] = {}
+        self.scores = {}        # kategória -> eredmények listája
         self.load()
 
-    def load(self) -> None:
+    def load(self):
+        """Betölti a fájlt. Ha nincs meg vagy hibás, üres ranglistával indulunk."""
+        self.scores = {}
         try:
             with open(self.filename, "r", encoding="utf-8") as file:
-                saved_scores = json.load(file)
-        except FileNotFoundError:
-            self.scores = {}
+                data = json.load(file)
+        except (OSError, ValueError):
             return
-        except json.JSONDecodeError:
-            self.scores = {}
-            return
+        if isinstance(data, dict):
+            for category, results in data.items():
+                if isinstance(results, list):
+                    self.scores[category] = [r for r in results if isinstance(r, dict)]
 
-        if isinstance(saved_scores, dict):
-            self.scores = {
-                category: entries
-                for category, entries in saved_scores.items()
-                if isinstance(category, str)
-                and isinstance(entries, list)
-                and all(isinstance(entry, dict) for entry in entries)
-            }
-        else:
-            self.scores = {}
+    def save(self):
+        """Kiírja a ranglistát a fájlba."""
+        try:
+            with open(self.filename, "w", encoding="utf-8") as file:
+                json.dump(self.scores, file, ensure_ascii=False, indent=2)
+        except OSError:
+            pass    # ha nem sikerül menteni, a játék ettől még fut tovább
 
-    def save(self) -> None:
-        with open(self.filename, "w", encoding="utf-8") as file:
-            json.dump(self.scores, file, ensure_ascii=False, indent=2)
+    def add_memory_score(self, difficulty, moves, seconds):
+        """Kártyapár-kereső eredmény: kevesebb lépés a jobb, döntetlennél a kevesebb idő."""
+        entry = {"moves": moves, "seconds": seconds, "date": self._today()}
+        return self._add_score("memory_" + difficulty, entry,
+                               lambda e: (e.get("moves", 9999), e.get("seconds", 9999)))
 
-    def add_memory_score(self, difficulty: str, moves: int, seconds: int) -> bool:
-        category = f"memory_{difficulty}"
-        entry = {"moves": moves, "seconds": seconds}
-        return self._add_score(
-            category,
-            entry,
-            lambda score: (score["moves"], score["seconds"]),
-        )
+    def add_simon_score(self, speed, level):
+        """Simon eredmény: a magasabb szint a jobb. A 0 szintet nem mentjük."""
+        if level < 1:
+            return False
+        entry = {"level": level, "date": self._today()}
+        return self._add_score("simon_" + speed, entry, lambda e: -e.get("level", 0))
 
-    def add_simon_score(self, speed: str, level: int) -> bool:
-        category = f"simon_{speed}"
-        entry = {"level": level}
-        return self._add_score(category, entry, lambda score: -score["level"])
+    def _add_score(self, category, entry, sort_key):
+        """Beteszi az eredményt, sorba rendezi, csak az első 5-öt tartja meg, és ment.
 
-    def _add_score(
-        self,
-        category: str,
-        entry: dict,
-        sort_key: Callable[[dict], int | tuple[int, int]],
-    ) -> bool:
-        old_scores = self.get_top(category)
-        is_record = not old_scores or sort_key(entry) < sort_key(old_scores[0])
-
-        new_scores = old_scores + [entry]
-        new_scores.sort(key=sort_key)
-        self.scores[category] = new_scores[:5]
+        Igaz, ha az új eredmény lett az első (új rekord).
+        """
+        results = self.scores.setdefault(category, [])
+        results.append(entry)
+        results.sort(key=sort_key)
+        del results[cfg.MAX_SCORES:]
         self.save()
-        return is_record
+        return results[0] is entry
 
-    def get_top(self, category: str) -> list[dict]:
+    def get_top(self, category):
+        """Az adott kategória legjobb eredményei."""
         return self.scores.get(category, [])
 
-    def get_best(self, category: str) -> dict | None:
-        top_scores = self.get_top(category)
-        if top_scores:
-            return top_scores[0]
+    def get_best(self, category):
+        """Az adott kategória legjobb eredménye, vagy None, ha még nincs."""
+        top = self.get_top(category)
+        if top:
+            return top[0]
         return None
+
+    def _today(self):
+        return datetime.now().strftime("%Y.%m.%d.")
